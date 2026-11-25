@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">JARVIS</string>
+    <string name="accessibility_service_description">On-demand JARVIS screen agent that reads screen elements and performs confirmed clicks or text inputs only when explicitly requested by you.</string>
+    <string name="tile_floating_jarvis">JARVIS Overlay</string>
+    <string name="overlay_notification_channel">JARVIS Floating Agent</string>
+    <string name="overlay_notification_title">JARVIS активен поверх экрана</string>
+    <string name="overlay_notification_text">Нажмите на пузырь для быстрого запроса</string>
+</resources>

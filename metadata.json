@@ -1,0 +1,6 @@
+{
+  "name": "JARVIS",
+  "description": "Local-first AI agent client for Android with multi-provider LLM failover, local command router, skills/plugins, token budget speedometer, TTS, and floating overlay.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
