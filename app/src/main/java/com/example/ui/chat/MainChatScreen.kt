@@ -116,9 +116,10 @@ import com.example.ui.animations.springBounce
 import com.example.ui.dashboard.SmallUserAvatar
 import com.example.ui.i18n.UiStrings
 import com.example.ui.sheets.PresetDropdownMenu
-private val StatusOptimalGreen = androidx.compose.ui.graphics.Color(0xFF22C55E)
-private val StatusWarningAmber = androidx.compose.ui.graphics.Color(0xFFF59E0B)
 import kotlinx.coroutines.delay
+
+private val StatusOptimalGreen = Color(0xFF22C55E)
+private val StatusWarningAmber = Color(0xFFF59E0B)
 
 @Composable
 fun ChatTopAppBar(
