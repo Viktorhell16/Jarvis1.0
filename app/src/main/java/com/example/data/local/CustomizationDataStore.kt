@@ -20,7 +20,8 @@ data class CustomizationState(
     val snowfallEnabled: Boolean = true,
     val bouncingShapesEnabled: Boolean = true,
     val autoScrollPromptsEnabled: Boolean = true,
-    val emojiStyle: EmojiStyle = EmojiStyle.SYSTEM
+    val emojiStyle: EmojiStyle = EmojiStyle.SYSTEM,
+    val telemetryEnabled: Boolean = true
 )
 
 class CustomizationDataStore(private val context: Context) {
@@ -32,6 +33,7 @@ class CustomizationDataStore(private val context: Context) {
         val BOUNCING_SHAPES = booleanPreferencesKey("bouncing_shapes_enabled")
         val AUTO_SCROLL_PROMPTS = booleanPreferencesKey("auto_scroll_prompts_enabled")
         val EMOJI_STYLE = stringPreferencesKey("emoji_style")
+        val TELEMETRY_ENABLED = booleanPreferencesKey("telemetry_enabled")
     }
 
     val state: Flow<CustomizationState> = context.customizationDataStore.data.map { prefs ->
@@ -41,7 +43,8 @@ class CustomizationDataStore(private val context: Context) {
             snowfallEnabled = prefs[Keys.SNOWFALL] ?: true,
             bouncingShapesEnabled = prefs[Keys.BOUNCING_SHAPES] ?: true,
             autoScrollPromptsEnabled = prefs[Keys.AUTO_SCROLL_PROMPTS] ?: true,
-            emojiStyle = EmojiStyle.fromId(prefs[Keys.EMOJI_STYLE])
+            emojiStyle = EmojiStyle.fromId(prefs[Keys.EMOJI_STYLE]),
+            telemetryEnabled = prefs[Keys.TELEMETRY_ENABLED] ?: true
         )
     }
 
@@ -67,5 +70,9 @@ class CustomizationDataStore(private val context: Context) {
 
     suspend fun setEmojiStyle(style: EmojiStyle) {
         context.customizationDataStore.edit { it[Keys.EMOJI_STYLE] = style.id }
+    }
+
+    suspend fun setTelemetryEnabled(enabled: Boolean) {
+        context.customizationDataStore.edit { it[Keys.TELEMETRY_ENABLED] = enabled }
     }
 }

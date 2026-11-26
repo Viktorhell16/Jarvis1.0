@@ -8,10 +8,15 @@ import android.provider.AlarmClock
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -71,6 +76,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -98,6 +104,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -110,16 +118,17 @@ import com.example.data.local.CustomizationState
 import com.example.data.local.JarvPrefsState
 import com.example.data.local.MessageEntity
 import com.example.domain.prompts.PromptMarqueeGenerator
+import com.example.media.MediaAttachmentType
+import com.example.media.PendingMediaAttachment
 import com.example.ui.MainTab
 import com.example.ui.animations.liquidGlassBlurLayer
 import com.example.ui.animations.springBounce
 import com.example.ui.dashboard.SmallUserAvatar
 import com.example.ui.i18n.UiStrings
 import com.example.ui.sheets.PresetDropdownMenu
+import com.example.ui.theme.StatusHealthyGreen
+import com.example.ui.theme.StatusModerateYellow
 import kotlinx.coroutines.delay
-
-private val StatusOptimalGreen = Color(0xFF22C55E)
-private val StatusWarningAmber = Color(0xFFF59E0B)
 
 @Composable
 fun ChatTopAppBar(
@@ -184,7 +193,7 @@ fun ChatTopAppBar(
                     modifier = Modifier
                         .size(8.dp)
                         .clip(CircleShape)
-                        .background(if (isApiReady) StatusOptimalGreen else StatusWarningAmber)
+                        .background(if (isApiReady) StatusHealthyGreen else StatusModerateYellow)
                         .testTag("top_api_status_dot")
                 )
                 Spacer(Modifier.width(6.dp))
@@ -389,10 +398,12 @@ fun MainChatContent(
     isGenerating: Boolean,
     statusBanner: String?,
     attachedFileSummary: String?,
+    pendingMedia: PendingMediaAttachment?,
     composerPrefill: String,
     strings: UiStrings,
     onDismissBanner: () -> Unit,
     onClearAttachment: () -> Unit,
+    onClearMedia: () -> Unit,
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit,
     onConfirmAction: (MessageEntity, Boolean) -> Unit,
@@ -400,6 +411,7 @@ fun MainChatContent(
     onToggleSkills: () -> Unit,
     onToggleCanvas: () -> Unit,
     onSelectReasoning: (String) -> Unit,
+    onSelectTemperature: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -515,8 +527,11 @@ fun MainChatContent(
             }
         }
 
-        // Empty Hero State (Centered greeting + 10,000-Variant Auto-Scrolling Prompt Marquee) or Active Stream
+        // Empty Hero State (Centered bold JARVIS + Greeting + 10,000-Variant Auto-Scrolling Prompt Marquee) or Active Stream
         if (messages.isEmpty()) {
+            var heroVisible by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { heroVisible = true }
+
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -529,17 +544,46 @@ fun MainChatContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    val nick = prefsState.userName.ifBlank { "JARVIS" }
-                    Text(
-                        text = "${nick}${strings.greetingSuffix}",
-                        style = MaterialTheme.typography.displaySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp)
-                            .testTag("hero_centered_greeting")
-                    )
+                    AnimatedVisibility(
+                        visible = heroVisible,
+                        enter = fadeIn(animationSpec = tween(420)) + slideInVertically(
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                stiffness = Spring.StiffnessMediumLow
+                            ),
+                            initialOffsetY = { it / 3 }
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = strings.appName,
+                                style = MaterialTheme.typography.displayMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.testTag("hero_jarvis_brand")
+                            )
+                            val cleanNick = prefsState.userName.trim()
+                            val greetingText = if (cleanNick.isNotBlank()) {
+                                "${strings.greetingPrefix}$cleanNick"
+                            } else {
+                                strings.greetingGeneric
+                            }
+                            Text(
+                                text = greetingText,
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.testTag("hero_centered_greeting")
+                            )
+                        }
+                    }
 
                     LazyRow(
                         state = suggestionRowState,
@@ -618,6 +662,99 @@ fun MainChatContent(
                     Icon(Icons.Filled.Stop, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(strings.stopGeneration)
+                }
+            }
+        }
+
+        pendingMedia?.let { media ->
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .testTag("pending_media_preview_chip")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (media.previewBitmap != null) {
+                        Image(
+                            bitmap = media.previewBitmap.asImageBitmap(),
+                            contentDescription = media.displayName,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (media.isProcessing) {
+                                CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Outlined.AutoAwesome,
+                                    contentDescription = media.badgeText,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Column(modifier = Modifier.weight(1f, fill = false)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Text(
+                                    text = media.badgeText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Text(
+                                text = media.displayName,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = media.detailsText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onClearMedia,
+                        modifier = Modifier
+                            .size(32.dp)
+                            .testTag("clear_pending_media_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Remove media",
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
         }
@@ -707,7 +844,8 @@ fun MainChatContent(
                     )
                 }
 
-                val hasText = inputText.isNotBlank()
+                val canSend = inputText.isNotBlank() ||
+                    (pendingMedia != null && !pendingMedia.isProcessing && pendingMedia.frames.isNotEmpty())
                 Surface(
                     shape = CircleShape,
                     color = Color.White,
@@ -716,7 +854,7 @@ fun MainChatContent(
                         .clip(CircleShape)
                         .springBounce(0.90f)
                         .clickable {
-                            if (hasText) {
+                            if (canSend) {
                                 val toSend = inputText
                                 inputText = ""
                                 onSendMessage(toSend)
@@ -741,8 +879,8 @@ fun MainChatContent(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = if (hasText) Icons.AutoMirrored.Filled.Send else Icons.Filled.GraphicEq,
-                            contentDescription = if (hasText) "Send" else "Voice input",
+                            imageVector = if (canSend) Icons.AutoMirrored.Filled.Send else Icons.Filled.GraphicEq,
+                            contentDescription = if (canSend) "Send" else "Voice input",
                             tint = Color.Black,
                             modifier = Modifier.size(22.dp)
                         )
@@ -756,10 +894,12 @@ fun MainChatContent(
             skillsEnabled = prefsState.skillsEnabled,
             canvasEnabled = prefsState.canvasEnabled,
             reasoningEffort = prefsState.reasoningEffort,
+            temperatureLevel = prefsState.temperatureLevel,
             strings = strings,
             onToggleSkills = onToggleSkills,
             onToggleCanvas = onToggleCanvas,
-            onSelectReasoning = onSelectReasoning
+            onSelectReasoning = onSelectReasoning,
+            onSelectTemperature = onSelectTemperature
         )
     }
 }
@@ -769,10 +909,12 @@ private fun PillActionRow(
     skillsEnabled: Boolean,
     canvasEnabled: Boolean,
     reasoningEffort: String,
+    temperatureLevel: String,
     strings: UiStrings,
     onToggleSkills: () -> Unit,
     onToggleCanvas: () -> Unit,
-    onSelectReasoning: (String) -> Unit
+    onSelectReasoning: (String) -> Unit,
+    onSelectTemperature: (String) -> Unit
 ) {
     var reasoningMenuExpanded by remember { mutableStateOf(false) }
 
@@ -827,7 +969,7 @@ private fun PillActionRow(
 
         Box {
             FilterChip(
-                selected = reasoningEffort != "low",
+                selected = reasoningEffort != "low" || temperatureLevel != "medium",
                 onClick = { reasoningMenuExpanded = true },
                 label = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -840,7 +982,7 @@ private fun PillActionRow(
                         Spacer(Modifier.width(2.dp))
                         Icon(
                             imageVector = Icons.Filled.KeyboardArrowUp,
-                            contentDescription = "Reasoning effort",
+                            contentDescription = "Reasoning & temperature",
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -859,13 +1001,20 @@ private fun PillActionRow(
             DropdownMenu(
                 expanded = reasoningMenuExpanded,
                 onDismissRequest = { reasoningMenuExpanded = false },
-                offset = DpOffset(0.dp, (-196).dp),
-                shape = RoundedCornerShape(20.dp),
+                offset = DpOffset(0.dp, (-12).dp),
+                shape = RoundedCornerShape(22.dp),
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 modifier = Modifier
-                    .width(240.dp)
+                    .width(280.dp)
                     .testTag("reasoning_upward_menu")
             ) {
+                Text(
+                    text = strings.reasoningSectionTitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
                 listOf(
                     Triple("low", strings.reasoningLow, strings.reasoningLowSub),
                     Triple("medium", strings.reasoningMedium, strings.reasoningMediumSub),
@@ -878,6 +1027,44 @@ private fun PillActionRow(
                         },
                         leadingIcon = {
                             if (reasoningEffort == key) {
+                                Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            } else {
+                                Spacer(Modifier.size(18.dp))
+                            }
+                        },
+                        text = {
+                            Column {
+                                Text(title, style = MaterialTheme.typography.titleSmall)
+                                Text(sub, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    )
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 14.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+
+                Text(
+                    text = strings.temperatureSectionTitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+                listOf(
+                    Triple("low", strings.tempLow, strings.tempLowSub),
+                    Triple("medium", strings.tempMedium, strings.tempMediumSub),
+                    Triple("high", strings.tempHigh, strings.tempHighSub)
+                ).forEach { (key, title, sub) ->
+                    DropdownMenuItem(
+                        onClick = {
+                            onSelectTemperature(key)
+                            reasoningMenuExpanded = false
+                        },
+                        leadingIcon = {
+                            if (temperatureLevel == key) {
                                 Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                             } else {
                                 Spacer(Modifier.size(18.dp))

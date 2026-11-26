@@ -1,10 +1,13 @@
 package com.example.ui.dashboard
 
-import android.content.Intent
+import android.content.Context
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
@@ -38,6 +41,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Book
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.CloudDone
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.DataUsage
 import androidx.compose.material.icons.outlined.Diamond
 import androidx.compose.material.icons.outlined.Extension
@@ -64,9 +69,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,6 +91,7 @@ import coil.request.ImageRequest
 import com.example.data.local.ChatEntity
 import com.example.data.local.CustomizationState
 import com.example.data.local.DevPostEntity
+import com.example.data.local.EncryptedPrefsManager
 import com.example.data.local.GemModeEntity
 import com.example.data.local.JarvPrefsState
 import com.example.data.local.PersonalContext
@@ -99,6 +107,14 @@ import com.example.ui.settings.SettingsScreen
 import com.example.ui.theme.EmojiStyle
 import com.example.ui.theme.GifImageLoader
 import com.example.ui.theme.PalettePreset
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
+
+private const val MAX_PROFILE_MEDIA_BYTES = 8L * 1024L * 1024L
 
 private enum class HubSubRoute {
     NONE, TOKEN_DASHBOARD, PERSONAL_CONTEXT, JAR_MANAGER, SCHEDULED, SETTINGS, CUSTOMIZATION, ACTIVITY_HISTORY, PRIVACY, DEV_BLOG
@@ -123,6 +139,8 @@ fun ProfileSettingsHub(
     onOpenQuickProviderConfig: () -> Unit,
     onOpenLibrary: () -> Unit,
     onUpdateProfileMedia: (nickname: String, avatarUri: String?, bannerUri: String?) -> Unit,
+    firebaseUserEmail: String? = null,
+    onConnectGoogleFirebase: () -> Unit = {},
     onLogout: () -> Unit,
     onUpdatePersonalContext: (PersonalContext) -> Unit,
     onUpdateBudget: (Long, Double, Boolean) -> Unit,
@@ -148,6 +166,7 @@ fun ProfileSettingsHub(
     onResetCooldowns: () -> Unit,
     onToggleOverlay: (Boolean) -> Boolean,
     onToggleNotifications: (Boolean) -> Unit,
+    onToggleTelemetry: (Boolean) -> Unit,
     onImportArtifact: (title: String, type: String, category: String, content: String) -> Unit
 ) {
     var subRoute by remember { mutableStateOf(HubSubRoute.NONE) }
@@ -155,23 +174,51 @@ fun ProfileSettingsHub(
     var showInfoDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = remember(context) { EncryptedPrefsManager.getInstance(context) }
     val gifImageLoader = remember(context) { GifImageLoader.get(context) }
+    var showBannerBadge by remember { mutableStateOf(false) }
 
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            onUpdateProfileMedia(prefsState.userName, it.toString(), prefsState.bannerUri)
+    LaunchedEffect(showBannerBadge) {
+        if (showBannerBadge) {
+            delay(4000L)
+            showBannerBadge = false
         }
     }
 
-    val bannerPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let { selectedUri ->
+            scope.launch {
+                val result = saveBoundedProfileMedia(
+                    context = context,
+                    sourceUri = selectedUri,
+                    prefix = "avatar",
+                    previousUriString = prefsState.avatarUri
+                )
+                result.onSuccess { savedFileUri ->
+                    onUpdateProfileMedia(prefsState.userName, savedFileUri, prefsState.bannerUri)
+                }.onFailure { err ->
+                    showInfoDialog = "Ошибка загрузки файла" to (err.message ?: "Не удалось сохранить аватар.")
+                }
             }
-            onUpdateProfileMedia(prefsState.userName, prefsState.avatarUri, it.toString())
+        }
+    }
+
+    val bannerPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let { selectedUri ->
+            scope.launch {
+                val result = saveBoundedProfileMedia(
+                    context = context,
+                    sourceUri = selectedUri,
+                    prefix = "banner",
+                    previousUriString = prefsState.bannerUri
+                )
+                result.onSuccess { savedFileUri ->
+                    onUpdateProfileMedia(prefsState.userName, prefsState.avatarUri, savedFileUri)
+                }.onFailure { err ->
+                    showInfoDialog = "Ошибка загрузки файла" to (err.message ?: "Не удалось сохранить баннер.")
+                }
+            }
         }
     }
 
@@ -215,6 +262,7 @@ fun ProfileSettingsHub(
             HubSubRoute.TOKEN_DASHBOARD -> {
                 TokenSpeedometerScreen(
                     prefsState = prefsState,
+                    prefs = prefs,
                     usageList = usageList,
                     todayKey = todayKey,
                     monthKey = monthKey,
@@ -276,7 +324,8 @@ fun ProfileSettingsHub(
                     onToggleSlot = onToggleSlot,
                     onMoveSlot = onMoveSlot,
                     onResetCooldowns = onResetCooldowns,
-                    onToggleOverlay = onToggleOverlay
+                    onToggleOverlay = onToggleOverlay,
+                    onToggleTelemetry = onToggleTelemetry
                 )
             }
             HubSubRoute.CUSTOMIZATION -> {
@@ -356,7 +405,14 @@ fun ProfileSettingsHub(
                                         .fillMaxWidth()
                                         .height(148.dp)
                                         .clip(RoundedCornerShape(28.dp))
-                                        .clickable { bannerPicker.launch(arrayOf("image/*")) }
+                                        .clickable {
+                                            if (!showBannerBadge) {
+                                                showBannerBadge = true
+                                            } else {
+                                                showBannerBadge = false
+                                                bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                            }
+                                        }
                                         .testTag("profile_banner_card")
                                 ) {
                                     Box(modifier = Modifier.fillMaxSize()) {
@@ -364,6 +420,7 @@ fun ProfileSettingsHub(
                                             AsyncImage(
                                                 model = ImageRequest.Builder(context)
                                                     .data(prefsState.bannerUri)
+                                                    .size(1080, 480)
                                                     .crossfade(true)
                                                     .build(),
                                                 imageLoader = gifImageLoader,
@@ -396,20 +453,33 @@ fun ProfileSettingsHub(
                                             )
                                         }
 
-                                        Surface(
-                                            shape = RoundedCornerShape(14.dp),
-                                            color = Color.Black.copy(alpha = 0.45f),
+                                        androidx.compose.animation.AnimatedVisibility(
+                                            visible = showBannerBadge,
+                                            enter = fadeIn(),
+                                            exit = fadeOut(),
                                             modifier = Modifier
                                                 .align(Alignment.TopEnd)
                                                 .padding(10.dp)
                                         ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                                verticalAlignment = Alignment.CenterVertically
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = Color.Black.copy(alpha = 0.55f),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(14.dp))
+                                                    .clickable {
+                                                        showBannerBadge = false
+                                                        bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                                    }
+                                                    .testTag("profile_banner_badge")
                                             ) {
-                                                Icon(Icons.Outlined.Image, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                                Spacer(Modifier.width(4.dp))
-                                                Text("GIF / Баннер", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Icon(Icons.Outlined.Image, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                                    Spacer(Modifier.width(4.dp))
+                                                    Text("GIF / Баннер", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                                }
                                             }
                                         }
                                     }
@@ -419,7 +489,7 @@ fun ProfileSettingsHub(
                                     modifier = Modifier
                                         .padding(top = 102.dp)
                                         .size(92.dp)
-                                        .clickable { avatarPicker.launch(arrayOf("image/*")) }
+                                        .clickable { avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
                                         .testTag("profile_avatar_picker")
                                 ) {
                                     Box(
@@ -486,6 +556,50 @@ fun ProfileSettingsHub(
                             }
 
                             Spacer(Modifier.height(14.dp))
+
+                            Surface(
+                                shape = RoundedCornerShape(24.dp),
+                                color = if (firebaseUserEmail != null) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.90f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .then(
+                                        if (firebaseUserEmail == null) Modifier.clickable(onClick = onConnectGoogleFirebase)
+                                        else Modifier
+                                    )
+                                    .testTag("firebase_sync_status_card")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (firebaseUserEmail != null) Icons.Outlined.CloudDone else Icons.Outlined.CloudOff,
+                                        contentDescription = null,
+                                        tint = if (firebaseUserEmail != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (firebaseUserEmail != null) "Firebase Cloud Sync активна" else "Подключить Google (Firebase Sync)",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = firebaseUserEmail ?: "Нажмите, чтобы синхронизировать заметки и чаты",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(10.dp))
 
                             Surface(
                                 shape = RoundedCornerShape(24.dp),
@@ -667,14 +781,14 @@ fun ProfileSettingsHub(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedButton(
-                        onClick = { avatarPicker.launch(arrayOf("image/*")) },
+                        onClick = { avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         shape = RoundedCornerShape(18.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Выбрать аватар (GIF / PNG / JPG)")
                     }
                     OutlinedButton(
-                        onClick = { bannerPicker.launch(arrayOf("image/*")) },
+                        onClick = { bannerPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         shape = RoundedCornerShape(18.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -720,6 +834,7 @@ fun SmallUserAvatar(name: String, avatarUri: String?, sizeDp: Int) {
             AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(avatarUri)
+                    .size(256, 256)
                     .crossfade(true)
                     .build(),
                 imageLoader = gifImageLoader,
@@ -790,4 +905,83 @@ private fun ActivityHistoryDialog(
             TextButton(onClick = onDismiss) { Text("Закрыть") }
         }
     )
+}
+
+private suspend fun saveBoundedProfileMedia(
+    context: Context,
+    sourceUri: Uri,
+    prefix: String,
+    previousUriString: String?
+): Result<String> = withContext(Dispatchers.IO) {
+    try {
+        val resolver = context.contentResolver
+        val afdSize = runCatching {
+            resolver.openAssetFileDescriptor(sourceUri, "r")?.use { it.length } ?: -1L
+        }.getOrDefault(-1L)
+        if (afdSize > MAX_PROFILE_MEDIA_BYTES) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Файл превышает ограничение 8 МБ. Выберите более лёгкое изображение или GIF.")
+            )
+        }
+
+        val mime = resolver.getType(sourceUri).orEmpty().lowercase()
+        val ext = when {
+            mime.contains("gif") -> "gif"
+            mime.contains("webp") -> "webp"
+            mime.contains("png") -> "png"
+            else -> "jpg"
+        }
+
+        val bytes = resolver.openInputStream(sourceUri)?.use { input ->
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(16 * 1024)
+            var total = 0L
+            while (true) {
+                val read = input.read(buf)
+                if (read <= 0) break
+                total += read
+                if (total > MAX_PROFILE_MEDIA_BYTES) {
+                    return@withContext Result.failure(
+                        IllegalArgumentException("Файл превышает ограничение 8 МБ. Выберите более лёгкое изображение или GIF.")
+                    )
+                }
+                out.write(buf, 0, read)
+            }
+            out.toByteArray()
+        } ?: return@withContext Result.failure(IllegalStateException("Не удалось прочитать выбранный файл."))
+
+        if (bytes.isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("Выбран пустой файл."))
+        }
+
+        val mediaDir = File(context.filesDir, "profile_media").apply { mkdirs() }
+        val targetFile = File(mediaDir, "${prefix}_${System.currentTimeMillis()}.$ext")
+        targetFile.writeBytes(bytes)
+
+        deletePreviousManagedMedia(mediaDir, previousUriString, excludeFile = targetFile)
+        Result.success(Uri.fromFile(targetFile).toString())
+    } catch (e: Exception) {
+        Result.failure(IllegalStateException("Не удалось сохранить медиафайл: ${e.localizedMessage ?: "ошибка чтения"}"))
+    }
+}
+
+private fun deletePreviousManagedMedia(
+    mediaDir: File,
+    previousUriString: String?,
+    excludeFile: File
+) {
+    val raw = previousUriString?.trim()?.takeIf { it.isNotEmpty() } ?: return
+    val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return
+    if (parsed.scheme != "file") return
+    val prevPath = parsed.path ?: return
+    val prevFile = File(prevPath)
+    val dirCanonical = runCatching { mediaDir.canonicalPath }.getOrNull() ?: return
+    val prevCanonical = runCatching { prevFile.canonicalPath }.getOrNull() ?: return
+    val excludeCanonical = runCatching { excludeFile.canonicalPath }.getOrNull()
+    if (prevCanonical.startsWith(dirCanonical + File.separator) &&
+        prevCanonical != excludeCanonical &&
+        prevFile.exists()
+    ) {
+        runCatching { prevFile.delete() }
+    }
 }

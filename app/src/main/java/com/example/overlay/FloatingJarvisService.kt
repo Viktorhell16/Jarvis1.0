@@ -26,6 +26,11 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.compose.ui.graphics.toArgb
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import com.example.MainActivity
 import com.example.R
 import com.example.accessibility.JarvisAccessibilityService
@@ -36,16 +41,26 @@ import com.example.data.network.LlmFailoverClient
 import com.example.data.network.StreamEvent
 import com.example.domain.router.CommandRouter
 import com.example.domain.router.RouteDecision
+import com.example.telemetry.JarvisCrashReporter
+import com.example.telemetry.JarvisPerformanceTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
-class FloatingJarvisService : Service() {
+class FloatingJarvisService : Service(), LifecycleOwner, ViewModelStoreOwner {
+
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    private val serviceViewModelStore = ViewModelStore()
+
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+
+    override val viewModelStore: ViewModelStore
+        get() = serviceViewModelStore
 
     private var windowManager: WindowManager? = null
     private var bubbleView: View? = null
@@ -65,16 +80,30 @@ class FloatingJarvisService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        prefs = EncryptedPrefsManager(this)
-        db = JarvisDatabase.getInstance(this)
-        llmClient = LlmFailoverClient(prefs, db.providerSlotDao(), db.tokenUsageDao())
-        router = CommandRouter(this)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        val startupTrace = JarvisPerformanceTracker.startOverlayBubbleStartupTrace()
+        try {
+            prefs = EncryptedPrefsManager.getInstance(this)
+            db = JarvisDatabase.getInstance(this)
+            llmClient = LlmFailoverClient(prefs, db.providerSlotDao(), db.tokenUsageDao())
+            router = CommandRouter(this)
 
-        startForegroundNotification()
-        if (Settings.canDrawOverlays(this)) {
-            showBubble()
-        } else {
+            startForegroundNotification()
+            if (Settings.canDrawOverlays(this)) {
+                showBubble()
+                JarvisCrashReporter.setOverlayActive(true)
+                JarvisCrashReporter.logBreadcrumb("FloatingJarvisService bubble shown")
+            } else {
+                JarvisCrashReporter.setOverlayActive(false)
+                stopSelf()
+            }
+        } catch (e: Exception) {
+            JarvisCrashReporter.recordNonFatal(e, "overlay_service_on_create")
             stopSelf()
+        } finally {
+            startupTrace.stop()
         }
     }
 
@@ -245,6 +274,7 @@ class FloatingJarvisService : Service() {
 
                     if (moved && inDismissZone) {
                         prefs.setFloatingOverlayEnabled(false)
+                        cleanupOverlayViews()
                         stopSelf()
                     } else if (!moved) {
                         toggleMiniPanel()
@@ -258,13 +288,18 @@ class FloatingJarvisService : Service() {
 
         dismissView = dismissZone
         bubbleView = bubble
-        windowManager?.addView(dismissZone, dismissParams)
-        windowManager?.addView(bubble, params)
+        try {
+            windowManager?.addView(dismissZone, dismissParams)
+            windowManager?.addView(bubble, params)
+        } catch (e: Exception) {
+            JarvisCrashReporter.recordNonFatal(e, "overlay_add_bubble_view")
+            stopSelf()
+        }
     }
 
     private fun toggleMiniPanel() {
         if (panelView != null) {
-            windowManager?.removeView(panelView)
+            runCatching { windowManager?.removeViewImmediate(panelView) }
             panelView = null
             return
         }
@@ -405,7 +440,12 @@ class FloatingJarvisService : Service() {
         }
 
         panelView = root
-        windowManager?.addView(root, params)
+        try {
+            windowManager?.addView(root, params)
+        } catch (e: Exception) {
+            panelView = null
+            JarvisCrashReporter.recordNonFatal(e, "overlay_add_panel_view")
+        }
     }
 
     private fun handleMiniQuickChip(tag: String, outputText: TextView) {
@@ -478,7 +518,8 @@ class FloatingJarvisService : Service() {
             llmClient.streamCompletion(
                 history = listOf(msg),
                 systemPrompt = "You are JARVIS Mini Overlay. Keep answers super concise and helpful.",
-                reasoningEffort = "low"
+                reasoningEffort = "low",
+                temperature = prefs.state.value.resolveTemperatureFloat()
             ).collect { ev ->
                 when (ev) {
                     is StreamEvent.TokenDelta -> outputText.text = ev.accumulatedText
@@ -492,12 +533,38 @@ class FloatingJarvisService : Service() {
         }
     }
 
-    override fun onDestroy() {
+    private fun cleanupOverlayViews() {
         activeJob?.cancel()
+        activeJob = null
+        panelView?.let { v ->
+            if (v.isAttachedToWindow) runCatching { windowManager?.removeViewImmediate(v) }
+        }
+        panelView = null
+        dismissView?.let { v ->
+            if (v.isAttachedToWindow) runCatching { windowManager?.removeViewImmediate(v) }
+        }
+        dismissView = null
+        bubbleView?.let { v ->
+            if (v.isAttachedToWindow) runCatching { windowManager?.removeViewImmediate(v) }
+        }
+        bubbleView = null
+    }
+
+    override fun onDestroy() {
+        JarvisCrashReporter.setOverlayActive(false)
+        cleanupOverlayViews()
         serviceScope.cancel()
-        panelView?.let { runCatching { windowManager?.removeView(it) } }
-        dismissView?.let { runCatching { windowManager?.removeView(it) } }
-        bubbleView?.let { runCatching { windowManager?.removeView(it) } }
+        windowManager = null
+        if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        }
+        if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+        }
+        if (lifecycleRegistry.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+            lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        }
+        serviceViewModelStore.clear()
         super.onDestroy()
     }
 }

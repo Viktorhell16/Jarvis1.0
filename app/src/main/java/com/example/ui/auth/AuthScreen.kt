@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,21 +12,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -53,6 +59,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun AuthScreen(
     bouncingShapesEnabled: Boolean = true,
+    googleSignInLoading: Boolean = false,
+    externalError: String? = null,
+    onGoogleSignIn: () -> Unit = {},
     onLogin: suspend (nickname: String, password: String) -> Result<Unit>,
     onRegister: suspend (nickname: String, password: String) -> Result<Unit>
 ) {
@@ -104,10 +113,49 @@ fun AuthScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Локальный профиль устройства (Room DB + AES-256)",
+                        text = "Firebase Cloud Sync (Google) или локальный профиль (Room DB + AES-256)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    OutlinedButton(
+                        onClick = {
+                            if (!googleSignInLoading && !isLoading) {
+                                errorMsg = null
+                                onGoogleSignIn()
+                            }
+                        },
+                        enabled = !googleSignInLoading && !isLoading,
+                        shape = RoundedCornerShape(24.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .springBounce()
+                            .testTag("auth_google_signin_button")
+                    ) {
+                        if (googleSignInLoading) {
+                            CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(10.dp))
+                        } else {
+                            Icon(Icons.Outlined.AccountCircle, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(10.dp))
+                        }
+                        Text("Войти через Google (Firebase)", style = MaterialTheme.typography.titleSmall)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+                        Text(
+                            text = "или локальный профиль",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 10.dp)
+                        )
+                        HorizontalDivider(modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.outlineVariant)
+                    }
 
                     SingleChoiceSegmentedButtonRow(
                         modifier = Modifier
@@ -183,7 +231,8 @@ fun AuthScreen(
                         )
                     }
 
-                    errorMsg?.let { err ->
+                    val shownError = errorMsg ?: externalError
+                    shownError?.let { err ->
                         Surface(
                             shape = RoundedCornerShape(14.dp),
                             color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
@@ -202,7 +251,7 @@ fun AuthScreen(
 
                     Button(
                         onClick = {
-                            if (isLoading) return@Button
+                            if (isLoading || googleSignInLoading) return@Button
                             isLoading = true
                             errorMsg = null
                             scope.launch {
@@ -215,7 +264,7 @@ fun AuthScreen(
                                 result.onFailure { errorMsg = it.message ?: "Ошибка авторизации" }
                             }
                         },
-                        enabled = !isLoading,
+                        enabled = !isLoading && !googleSignInLoading,
                         shape = RoundedCornerShape(24.dp),
                         modifier = Modifier
                             .fillMaxWidth()

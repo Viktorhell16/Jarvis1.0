@@ -6,9 +6,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -23,6 +25,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ui.theme.LocalJarvisPalette
 import kotlin.math.PI
 import kotlin.math.abs
@@ -48,7 +53,8 @@ private class BouncingShapeBody(
 
 /**
  * 60/120fps frame-synced DVD-style bouncing MD3 geometric shapes background
- * with subtle opacity (0.08f..0.13f) and acrylic frosted glass blur (48.dp).
+ * with subtle opacity (0.08f..0.13f), acrylic frosted glass blur (48.dp),
+ * lifecycle pause/resume on ON_STOP/ON_START, and pre-allocated drawing objects.
  */
 @Composable
 fun BouncingShapesBackground(
@@ -62,6 +68,29 @@ fun BouncingShapesBackground(
     val dotTint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
     val ringTint = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.36f)
     val density = LocalDensity.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var isStarted by remember(lifecycleOwner) {
+        mutableStateOf(lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> isStarted = true
+                Lifecycle.Event.ON_STOP -> isStarted = false
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val startBase = remember(paletteExtras, primary) {
+        paletteExtras.preset.previewStart.takeIf { it != Color.Transparent } ?: primary
+    }
+    val endBase = remember(paletteExtras, secondary) {
+        paletteExtras.preset.previewEnd.takeIf { it != Color.Transparent } ?: secondary
+    }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val widthPx = with(density) { maxWidth.toPx().coerceAtLeast(320f) }
@@ -79,9 +108,16 @@ fun BouncingShapesBackground(
                 )
             }
 
+            // Pre-allocate Path & per-body fill colors outside draw block
+            val reusablePath = remember { Path() }
+            val bodyColors = remember(bodies, startBase, endBase) {
+                bodies.map { b -> (if (b.useSecondary) endBase else startBase).copy(alpha = b.alpha) }
+            }
+
             var frameTick by remember { mutableLongStateOf(0L) }
 
-            LaunchedEffect(enabled, widthPx, heightPx) {
+            LaunchedEffect(enabled, isStarted, widthPx, heightPx) {
+                if (!isStarted) return@LaunchedEffect
                 var lastNanos = 0L
                 while (true) {
                     withFrameNanos { nanos ->
@@ -121,17 +157,11 @@ fun BouncingShapesBackground(
                     .fillMaxSize()
                     .blur(48.dp)
             ) {
-                // Read frameTick inside draw scope for 60/120fps invalidation without recomposition
                 @Suppress("UNUSED_VARIABLE")
                 val tick = frameTick
 
-                bodies.forEach { body ->
-                    val baseColor = if (body.useSecondary) {
-                        paletteExtras.preset.previewEnd.takeIf { it != Color.Transparent } ?: secondary
-                    } else {
-                        paletteExtras.preset.previewStart.takeIf { it != Color.Transparent } ?: primary
-                    }
-                    val fillColor = baseColor.copy(alpha = body.alpha)
+                bodies.forEachIndexed { idx, body ->
+                    val fillColor = bodyColors[idx]
                     val center = Offset(body.x, body.y)
 
                     rotate(degrees = body.angle, pivot = center) {
@@ -156,12 +186,12 @@ fun BouncingShapesBackground(
                                 )
                             }
                             ShapeKind.CLOVER -> {
-                                val path = buildCloverPath(center, body.radius, lobes = 6)
-                                drawPath(path = path, color = fillColor)
+                                buildCloverPathInto(reusablePath, center, body.radius, lobes = 6)
+                                drawPath(path = reusablePath, color = fillColor)
                             }
                             ShapeKind.SOFT_POLYGON -> {
-                                val path = buildCloverPath(center, body.radius, lobes = 4)
-                                drawPath(path = path, color = fillColor)
+                                buildCloverPathInto(reusablePath, center, body.radius, lobes = 4)
+                                drawPath(path = reusablePath, color = fillColor)
                             }
                         }
                     }
@@ -170,26 +200,31 @@ fun BouncingShapesBackground(
         }
 
         if (showNothingDotMatrix) {
+            val dotStepPx = with(density) { 28.dp.toPx() }
+            val dotRadiusPx = with(density) { 1.3.dp.toPx() }
+            val ringRadii = remember(density) {
+                with(density) { listOf(72.dp.toPx(), 118.dp.toPx(), 164.dp.toPx()) }
+            }
+            val ringStroke = remember(density) { Stroke(width = with(density) { 1.dp.toPx() }) }
+
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val step = 28.dp.toPx()
-                val dotRadius = 1.3.dp.toPx()
-                var x = step * 0.5f
+                var x = dotStepPx * 0.5f
                 while (x < size.width) {
-                    var y = step * 0.5f
+                    var y = dotStepPx * 0.5f
                     while (y < size.height) {
-                        drawCircle(color = dotTint, radius = dotRadius, center = Offset(x, y))
-                        y += step
+                        drawCircle(color = dotTint, radius = dotRadiusPx, center = Offset(x, y))
+                        y += dotStepPx
                     }
-                    x += step
+                    x += dotStepPx
                 }
 
                 val ringCenter = Offset(size.width * 0.82f, size.height * 0.18f)
-                listOf(72.dp.toPx(), 118.dp.toPx(), 164.dp.toPx()).forEach { r ->
+                ringRadii.forEach { r ->
                     drawCircle(
                         color = ringTint,
                         radius = r,
                         center = ringCenter,
-                        style = Stroke(width = 1.dp.toPx())
+                        style = ringStroke
                     )
                 }
             }
@@ -199,8 +234,8 @@ fun BouncingShapesBackground(
     }
 }
 
-private fun buildCloverPath(center: Offset, radius: Float, lobes: Int): Path {
-    val path = Path()
+private fun buildCloverPathInto(path: Path, center: Offset, radius: Float, lobes: Int) {
+    path.reset()
     val steps = 80
     for (i in 0..steps) {
         val angle = (i.toFloat() / steps) * (2f * PI.toFloat())
@@ -210,5 +245,4 @@ private fun buildCloverPath(center: Offset, radius: Float, lobes: Int): Path {
         if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
     }
     path.close()
-    return path
 }

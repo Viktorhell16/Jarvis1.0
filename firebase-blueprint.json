@@ -1,0 +1,130 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user's JARVIS profile and preferences stored under users/{userId}.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the profile owner."
+        },
+        "nickname": {
+          "type": "string",
+          "description": "Display nickname shown in the JARVIS greeting and profile hub."
+        },
+        "languageCode": {
+          "type": "string",
+          "enum": ["ru", "uk", "en"],
+          "description": "Preferred UI language code."
+        },
+        "paletteId": {
+          "type": "string",
+          "description": "Selected dark-only palette preset ID."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "nickname", "languageCode", "paletteId", "createdAt", "updatedAt"]
+    },
+    "CloudNote": {
+      "title": "CloudNote",
+      "description": "User's synced JARVIS Notebook document or artifact.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Note or artifact title."
+        },
+        "artifactType": {
+          "type": "string",
+          "enum": ["FILE", "IMAGE", "PAGE", "DOCUMENT", "PRESENTATION", "BOOK"],
+          "description": "Artifact category type."
+        },
+        "category": {
+          "type": "string",
+          "description": "Filter category label."
+        },
+        "content": {
+          "type": "string",
+          "description": "Markdown text content of the note."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Whether the note is pinned."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "title", "artifactType", "category", "content", "pinned", "createdAt", "updatedAt"]
+    },
+    "CloudChat": {
+      "title": "CloudChat",
+      "description": "User's synced chat summary metadata.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Conversation title."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Whether the chat is pinned."
+        },
+        "lastMessagePreview": {
+          "type": "string",
+          "description": "Short preview of the latest message."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp (FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "title", "pinned", "lastMessagePreview", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Owner-isolated user profile document."
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": "CloudNote",
+      "description": "Owner-isolated synced JARVIS Notebook artifacts."
+    },
+    "/users/{userId}/chats/{chatId}": {
+      "schema": "CloudChat",
+      "description": "Owner-isolated synced chat summaries."
+    }
+  }
+}

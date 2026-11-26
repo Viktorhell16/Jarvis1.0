@@ -1,13 +1,17 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -34,6 +38,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,12 +47,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.core.content.ContextCompat
+import androidx.credentials.CredentialManager
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.domain.prompts.PromptMarqueeGenerator
+import com.example.firebase.GoogleAuthHelper
+import com.example.firebase.authStateFlow
+import com.example.firebase.configureAppCheck
+import com.example.media.MultimodalMediaProcessor
 import com.example.ui.JarvisViewModel
 import com.example.ui.MainTab
 import com.example.ui.animations.BouncingShapesBackground
@@ -66,11 +77,14 @@ import com.example.ui.plugins.SourcesScreen
 import com.example.ui.sheets.QuickProviderConfigBottomSheet
 import com.example.ui.sheets.ToolsBottomSheet
 import com.example.ui.theme.JarvisTheme
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
         setContent {
             val vm: JarvisViewModel = viewModel()
@@ -82,6 +96,7 @@ class MainActivity : ComponentActivity() {
             val isGenerating by vm.isGenerating.collectAsStateWithLifecycle()
             val statusBanner by vm.statusBanner.collectAsStateWithLifecycle()
             val attachedFileSummary by vm.attachedFileSummary.collectAsStateWithLifecycle()
+            val pendingMedia by vm.pendingMedia.collectAsStateWithLifecycle()
             val composerPrefill by vm.composerPrefill.collectAsStateWithLifecycle()
             val drawerQuery by vm.drawerSearchQuery.collectAsStateWithLifecycle()
             val globalQuery by vm.globalSearchQuery.collectAsStateWithLifecycle()
@@ -103,12 +118,42 @@ class MainActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
             val context = LocalContext.current
             val lifecycleOwner = LocalLifecycleOwner.current
+            val credentialManager = remember(context) { CredentialManager.create(context) }
+            val firebaseUser by remember { Firebase.auth.authStateFlow() }
+                .collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
+
+            var googleSignInLoading by remember { mutableStateOf(false) }
+            var googleAuthError by remember { mutableStateOf<String?>(null) }
 
             var showQuickConfigSheet by remember { mutableStateOf(false) }
             var showToolsSheet by remember { mutableStateOf(false) }
             var showSourcesScreen by remember { mutableStateOf(false) }
             var showProfileHub by remember { mutableStateOf(false) }
             var marqueeSeed by remember { mutableLongStateOf(System.nanoTime()) }
+
+            LaunchedEffect(prefsState.hasSeenOnboarding, prefsState.loggedInUserId) {
+                if (prefsState.hasSeenOnboarding && prefsState.loggedInUserId == null) {
+                    GoogleAuthHelper.attemptAutoSignIn(
+                        context = context,
+                        credentialManager = credentialManager,
+                        scope = scope,
+                        onAuthSuccess = { user ->
+                            googleAuthError = null
+                            vm.loginOrSyncGoogleUser(user)
+                        },
+                        onUnauthenticated = {}
+                    )
+                }
+            }
+
+            val currentFirebaseUid = firebaseUser?.uid
+            if (currentFirebaseUid != null) {
+                key(currentFirebaseUid) {
+                    LaunchedEffect(currentFirebaseUid) {
+                        vm.observeCloudSync(currentFirebaseUid)
+                    }
+                }
+            }
 
             // Re-shuffle marquee prompts when returning to the app (ON_RESUME) or closing overlays / switching back to Chat
             DisposableEffect(lifecycleOwner) {
@@ -142,6 +187,92 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                uri?.let(vm::attachImageUri)
+            }
+
+            val videoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+                uri?.let(vm::attachVideoUri)
+            }
+
+            var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+            val takePictureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+                if (success) {
+                    pendingCameraUri?.let(vm::attachImageUri)
+                }
+            }
+            val cameraPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                if (granted) {
+                    val uri = MultimodalMediaProcessor.createCameraPhotoUri(context)
+                    pendingCameraUri = uri
+                    runCatching { takePictureLauncher.launch(uri) }
+                        .onFailure { vm.showBanner("Не удалось открыть камеру: ${it.localizedMessage}") }
+                } else {
+                    vm.showBanner("Разрешение на камеру отклонено. Разрешите доступ в настройках для съёмки фото.")
+                }
+            }
+
+            val launchCameraFlow: () -> Unit = {
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (granted) {
+                    val uri = MultimodalMediaProcessor.createCameraPhotoUri(context)
+                    pendingCameraUri = uri
+                    runCatching { takePictureLauncher.launch(uri) }
+                        .onFailure { vm.showBanner("Не удалось открыть камеру: ${it.localizedMessage}") }
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                }
+            }
+
+            val notificationPermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                if (granted) {
+                    vm.setNotificationsEnabled(true)
+                } else {
+                    vm.setNotificationsEnabled(false)
+                    vm.showBanner("Разрешение на уведомления отклонено. Включите его в настройках Android для получения патчноутов.")
+                }
+            }
+
+            val toggleNotificationsFlow: (Boolean) -> Unit = { enabled ->
+                if (!enabled) {
+                    vm.setNotificationsEnabled(false)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    vm.setNotificationsEnabled(true)
+                }
+            }
+
+            val triggerGoogleSignIn: () -> Unit = {
+                googleSignInLoading = true
+                googleAuthError = null
+                GoogleAuthHelper.onGoogleSignInClicked(
+                    context = context,
+                    credentialManager = credentialManager,
+                    scope = scope,
+                    onAuthSuccess = { user ->
+                        googleSignInLoading = false
+                        googleAuthError = null
+                        vm.loginOrSyncGoogleUser(user)
+                    },
+                    onAuthError = { msg ->
+                        googleSignInLoading = false
+                        googleAuthError = msg
+                        vm.showBanner(msg)
+                    },
+                    onAuthCancelled = {
+                        googleSignInLoading = false
+                    }
+                )
+            }
+
             val activeModeBadge = remember(gemModes, prefsState.activeGemId) {
                 val modeName = gemModes.find { it.id == prefsState.activeGemId }?.name ?: "Агент"
                 modeName.substringBefore(' ').take(12)
@@ -159,6 +290,9 @@ class MainActivity : ComponentActivity() {
                     prefsState.loggedInUserId == null -> {
                         AuthScreen(
                             bouncingShapesEnabled = customizationState.bouncingShapesEnabled,
+                            googleSignInLoading = googleSignInLoading,
+                            externalError = googleAuthError,
+                            onGoogleSignIn = triggerGoogleSignIn,
                             onLogin = { nick, pass -> vm.loginLocalUser(nick, pass).map { } },
                             onRegister = { nick, pass -> vm.registerLocalUser(nick, pass).map { } }
                         )
@@ -262,10 +396,12 @@ class MainActivity : ComponentActivity() {
                                                                 isGenerating = isGenerating,
                                                                 statusBanner = statusBanner,
                                                                 attachedFileSummary = attachedFileSummary,
+                                                                pendingMedia = pendingMedia,
                                                                 composerPrefill = composerPrefill,
                                                                 strings = strings,
                                                                 onDismissBanner = vm::dismissBanner,
                                                                 onClearAttachment = vm::clearAttachedFile,
+                                                                onClearMedia = vm::clearPendingMedia,
                                                                 onSendMessage = vm::sendMessage,
                                                                 onStopGeneration = vm::stopGeneration,
                                                                 onConfirmAction = vm::confirmMessageAction,
@@ -273,6 +409,7 @@ class MainActivity : ComponentActivity() {
                                                                 onToggleSkills = vm::toggleSkills,
                                                                 onToggleCanvas = vm::toggleCanvas,
                                                                 onSelectReasoning = vm::setReasoningEffort,
+                                                                onSelectTemperature = vm::setTemperatureLevel,
                                                                 modifier = Modifier.weight(1f)
                                                             )
                                                         }
@@ -360,9 +497,13 @@ class MainActivity : ComponentActivity() {
                                     onOpenQuickProviderConfig = { showQuickConfigSheet = true },
                                     onOpenLibrary = { vm.setTab(MainTab.LIBRARY) },
                                     onUpdateProfileMedia = vm::updateUserProfileMedia,
+                                    firebaseUserEmail = firebaseUser?.email ?: prefsState.googleAccountLabel.takeIf { firebaseUser != null && it.isNotBlank() },
+                                    onConnectGoogleFirebase = triggerGoogleSignIn,
                                     onLogout = {
                                         showProfileHub = false
-                                        vm.logoutLocalUser()
+                                        GoogleAuthHelper.signOutGoogle(credentialManager, scope) {
+                                            vm.logoutLocalUser()
+                                        }
                                     },
                                     onUpdatePersonalContext = vm::updatePersonalContext,
                                     onUpdateBudget = vm::updateBudgetSettings,
@@ -387,7 +528,8 @@ class MainActivity : ComponentActivity() {
                                     onMoveSlot = vm::moveSlotPriority,
                                     onResetCooldowns = vm::resetSlotCooldowns,
                                     onToggleOverlay = vm::toggleFloatingOverlay,
-                                    onToggleNotifications = vm::setNotificationsEnabled,
+                                    onToggleNotifications = toggleNotificationsFlow,
+                                    onToggleTelemetry = vm::setTelemetryEnabled,
                                     onImportArtifact = { title, type, category, content ->
                                         vm.createArtifact(title, type, category, content)
                                     }
@@ -436,6 +578,17 @@ class MainActivity : ComponentActivity() {
                                 ToolsBottomSheet(
                                     strings = strings,
                                     onDismiss = { showToolsSheet = false },
+                                    onPickPhoto = {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    },
+                                    onPickVideo = {
+                                        videoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                        )
+                                    },
+                                    onLaunchCamera = launchCameraFlow,
                                     onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
                                     onOpenSources = { showSourcesScreen = true },
                                     onOpenLibrary = { vm.setTab(MainTab.LIBRARY) },

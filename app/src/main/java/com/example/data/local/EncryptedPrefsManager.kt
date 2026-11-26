@@ -62,24 +62,33 @@ data class JarvPrefsState(
     val language: AppLanguage = AppLanguage.RU,
     val ttsEnabled: Boolean = false,
     val floatingOverlayEnabled: Boolean = false,
-    val activeProviderId: String = "gemini",
-    val activeBaseUrl: String = "https://generativelanguage.googleapis.com/v1beta",
+    val activeProviderId: String = "firebase_ai",
+    val activeBaseUrl: String = "firebase://ai-logic",
     val activeModelId: String = "gemini-2.5-flash",
-    val activeModelDisplayName: String = "Gemini 2.5 Flash",
+    val activeModelDisplayName: String = "Gemini 2.5 Flash (Firebase AI)",
     val activePresetId: String = "AUTO", // AUTO, DAILY, DEEP
     val reasoningEffort: String = "low", // low, medium, high
+    val temperatureLevel: String = "medium", // low (0.2), medium (0.7), high (1.15)
     val skillsEnabled: Boolean = true,
     val canvasEnabled: Boolean = false,
     val activeGemId: Long = 1L,
     val dailyTokenLimit: Long = 250_000L,
     val monthlyBudgetUsd: Double = 20.0,
     val hardStopEnabled: Boolean = false,
+    val manualTotalTokenBudget: Long = 5_000_000L,
+    val budgetResetTimestampMs: Long = 0L,
     val notificationsEnabled: Boolean = true,
     val personalContext: PersonalContext = PersonalContext(),
     val artifactsSeeded: Boolean = false,
     val githubUsername: String = "",
     val googleAccountLabel: String = ""
-)
+) {
+    fun resolveTemperatureFloat(): Float = when (temperatureLevel) {
+        "low" -> 0.2f
+        "high" -> 1.15f
+        else -> 0.7f
+    }
+}
 
 class EncryptedPrefsManager(context: Context) {
 
@@ -87,6 +96,17 @@ class EncryptedPrefsManager(context: Context) {
 
     private val _state = MutableStateFlow(loadState())
     val state: StateFlow<JarvPrefsState> = _state.asStateFlow()
+
+    companion object {
+        @Volatile
+        private var INSTANCE: EncryptedPrefsManager? = null
+
+        fun getInstance(context: Context): EncryptedPrefsManager {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: EncryptedPrefsManager(context.applicationContext).also { INSTANCE = it }
+            }
+        }
+    }
 
     private fun createEncryptedPrefs(context: Context): SharedPreferences {
         return try {
@@ -107,6 +127,87 @@ class EncryptedPrefsManager(context: Context) {
 
     private fun loadState(): JarvPrefsState {
         val uid = prefs.getLong("logged_in_user_id", -1L).takeIf { it > 0L }
+
+        val rawProvider = prefs.getString("active_provider_id", "firebase_ai") ?: "firebase_ai"
+        val rawBaseUrl = prefs.getString("active_base_url", "firebase://ai-logic") ?: "firebase://ai-logic"
+        val rawModelId = prefs.getString("active_model_id", "gemini-2.5-flash") ?: "gemini-2.5-flash"
+        val rawDisplay = prefs.getString("active_model_display", "Gemini 2.5 Flash (Firebase AI)")
+            ?: "Gemini 2.5 Flash (Firebase AI)"
+
+        var migrated = false
+        val migratedProvider = when (rawProvider) {
+            "custom" -> {
+                migrated = true
+                "anymodels"
+            }
+            "openai", "anthropic", "deepseek", "azure" -> {
+                migrated = true
+                "gemini"
+            }
+            "firebase_ai", "gemini", "openrouter", "anymodels" -> rawProvider
+            else -> {
+                migrated = true
+                "firebase_ai"
+            }
+        }
+
+        val migratedModelId = when (rawModelId) {
+            "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon" -> {
+                migrated = true
+                "gemini-2.5-flash"
+            }
+            else -> if (rawProvider in listOf("openai", "anthropic", "deepseek", "azure")) {
+                migrated = true
+                "gemini-2.5-flash"
+            } else {
+                rawModelId
+            }
+        }
+
+        val migratedBaseUrl = when {
+            rawProvider in listOf("openai", "anthropic", "deepseek", "azure") -> {
+                migrated = true
+                "https://generativelanguage.googleapis.com/v1beta"
+            }
+            migratedProvider == "anymodels" && rawBaseUrl.isBlank() -> {
+                migrated = true
+                "https://api.anymodels.ai/v1"
+            }
+            migratedProvider == "firebase_ai" -> "firebase://ai-logic"
+            else -> rawBaseUrl
+        }
+
+        val migratedDisplay = when {
+            rawModelId in listOf("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-4-argon") ||
+                rawDisplay.contains("3.8", ignoreCase = true) ||
+                rawDisplay.contains("3.5", ignoreCase = true) ||
+                rawDisplay.contains("Argon", ignoreCase = true) -> {
+                migrated = true
+                if (migratedProvider == "firebase_ai") "Gemini 2.5 Flash (Firebase AI)" else "Gemini 2.5 Flash"
+            }
+            rawProvider in listOf("openai", "anthropic", "deepseek", "azure") -> {
+                migrated = true
+                "Gemini 2.5 Flash"
+            }
+            else -> rawDisplay
+        }
+
+        if (migrated) {
+            val edit = prefs.edit()
+                .putString("active_provider_id", migratedProvider)
+                .putString("active_base_url", migratedBaseUrl)
+                .putString("active_model_id", migratedModelId)
+                .putString("active_model_display", migratedDisplay)
+            // Migrate saved legacy "custom" API key to "anymodels" if anymodels has no key yet
+            if (rawProvider == "custom" && (prefs.getString("api_key_anymodels", "") ?: "").isBlank()) {
+                val legacyCustomKey = prefs.getString("api_key_custom", "") ?: ""
+                if (legacyCustomKey.isNotBlank()) {
+                    edit.putString("api_key_anymodels", legacyCustomKey)
+                }
+            }
+            edit.apply()
+        }
+
         return JarvPrefsState(
             hasSeenOnboarding = prefs.getBoolean("has_seen_onboarding", false),
             loggedInUserId = uid,
@@ -117,19 +218,21 @@ class EncryptedPrefsManager(context: Context) {
             language = AppLanguage.fromCode(prefs.getString("language", AppLanguage.RU.code)),
             ttsEnabled = prefs.getBoolean("tts_enabled", false),
             floatingOverlayEnabled = prefs.getBoolean("floating_overlay", false),
-            activeProviderId = prefs.getString("active_provider_id", "gemini") ?: "gemini",
-            activeBaseUrl = prefs.getString("active_base_url", "https://generativelanguage.googleapis.com/v1beta")
-                ?: "https://generativelanguage.googleapis.com/v1beta",
-            activeModelId = prefs.getString("active_model_id", "gemini-2.5-flash") ?: "gemini-2.5-flash",
-            activeModelDisplayName = prefs.getString("active_model_display", "Gemini 2.5 Flash") ?: "Gemini 2.5 Flash",
+            activeProviderId = migratedProvider,
+            activeBaseUrl = migratedBaseUrl,
+            activeModelId = migratedModelId,
+            activeModelDisplayName = migratedDisplay,
             activePresetId = prefs.getString("active_preset_id", "AUTO") ?: "AUTO",
             reasoningEffort = prefs.getString("reasoning_effort", "low") ?: "low",
+            temperatureLevel = prefs.getString("temperature_level", "medium") ?: "medium",
             skillsEnabled = prefs.getBoolean("skills_enabled", true),
             canvasEnabled = prefs.getBoolean("canvas_enabled", false),
             activeGemId = prefs.getLong("active_gem_id", 1L),
             dailyTokenLimit = prefs.getLong("daily_token_limit", 250_000L),
             monthlyBudgetUsd = prefs.getFloat("monthly_budget_usd", 20.0f).toDouble(),
             hardStopEnabled = prefs.getBoolean("hard_stop_enabled", false),
+            manualTotalTokenBudget = prefs.getLong("manual_total_token_budget", 5_000_000L).coerceAtLeast(1_000L),
+            budgetResetTimestampMs = prefs.getLong("budget_reset_timestamp_ms", 0L).coerceAtLeast(0L),
             notificationsEnabled = prefs.getBoolean("notifications_enabled", true),
             personalContext = PersonalContext(
                 music = prefs.getString("ctx_music", "") ?: "",
@@ -213,6 +316,13 @@ class EncryptedPrefsManager(context: Context) {
         _state.update { it.copy(googleAccountLabel = accountLabel) }
     }
 
+    fun setGoogleAccountLabel(accountLabel: String) {
+        prefs.edit()
+            .putString("google_account_label", accountLabel.trim())
+            .apply()
+        _state.update { it.copy(googleAccountLabel = accountLabel.trim()) }
+    }
+
     fun getConnectorToken(iconKey: String): String = prefs.getString("connector_token_$iconKey", "") ?: ""
     fun getConnectorEndpoint(iconKey: String): String = prefs.getString("connector_endpoint_$iconKey", "") ?: ""
 
@@ -231,18 +341,21 @@ class EncryptedPrefsManager(context: Context) {
         apiKey: String
     ) {
         setApiKey(providerId, apiKey)
+        val cleanBase = baseUrl.trim().trimEnd('/')
+        val cleanModel = modelId.trim()
+        val cleanDisplay = modelDisplayName.trim()
         prefs.edit()
             .putString("active_provider_id", providerId)
-            .putString("active_base_url", baseUrl.trim().trimEnd('/'))
-            .putString("active_model_id", modelId.trim())
-            .putString("active_model_display", modelDisplayName.trim())
+            .putString("active_base_url", cleanBase)
+            .putString("active_model_id", cleanModel)
+            .putString("active_model_display", cleanDisplay)
             .apply()
         _state.update {
             it.copy(
                 activeProviderId = providerId,
-                activeBaseUrl = baseUrl.trim().trimEnd('/'),
-                activeModelId = modelId.trim(),
-                activeModelDisplayName = modelDisplayName.trim()
+                activeBaseUrl = cleanBase,
+                activeModelId = cleanModel,
+                activeModelDisplayName = cleanDisplay
             )
         }
     }
@@ -253,8 +366,15 @@ class EncryptedPrefsManager(context: Context) {
     }
 
     fun setReasoningEffort(effort: String) {
-        prefs.edit().putString("reasoning_effort", effort).apply()
-        _state.update { it.copy(reasoningEffort = effort) }
+        val safe = if (effort in listOf("low", "medium", "high")) effort else "low"
+        prefs.edit().putString("reasoning_effort", safe).apply()
+        _state.update { it.copy(reasoningEffort = safe) }
+    }
+
+    fun setTemperatureLevel(level: String) {
+        val safe = if (level in listOf("low", "medium", "high")) level else "medium"
+        prefs.edit().putString("temperature_level", safe).apply()
+        _state.update { it.copy(temperatureLevel = safe) }
     }
 
     fun setSkillsEnabled(enabled: Boolean) {
@@ -316,6 +436,22 @@ class EncryptedPrefsManager(context: Context) {
                 hardStopEnabled = hardStopEnabled
             )
         }
+    }
+
+    fun updateManualTokenBudget(budgetTokens: Long) {
+        val safe = budgetTokens.coerceAtLeast(1_000L)
+        prefs.edit()
+            .putLong("manual_total_token_budget", safe)
+            .apply()
+        _state.update { it.copy(manualTotalTokenBudget = safe) }
+    }
+
+    fun resetManualBudgetCounter(nowMs: Long = System.currentTimeMillis()) {
+        val safeTs = nowMs.coerceAtLeast(0L)
+        prefs.edit()
+            .putLong("budget_reset_timestamp_ms", safeTs)
+            .apply()
+        _state.update { it.copy(budgetResetTimestampMs = safeTs) }
     }
 
     fun setNotificationsEnabled(enabled: Boolean) {

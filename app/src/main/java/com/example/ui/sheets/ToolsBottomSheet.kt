@@ -17,6 +17,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Book
+import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.DashboardCustomize
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -24,8 +25,10 @@ import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.School
 import androidx.compose.material.icons.outlined.TravelExplore
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +51,9 @@ import com.example.ui.i18n.UiStrings
 fun ToolsBottomSheet(
     strings: UiStrings,
     onDismiss: () -> Unit,
+    onPickPhoto: () -> Unit,
+    onPickVideo: () -> Unit,
+    onLaunchCamera: () -> Unit,
     onPickFile: () -> Unit,
     onOpenSources: () -> Unit,
     onOpenLibrary: () -> Unit,
@@ -76,6 +82,24 @@ fun ToolsBottomSheet(
                     .padding(horizontal = 20.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                QuickAttachCard(
+                    icon = Icons.Outlined.PhotoLibrary,
+                    label = strings.toolPhoto,
+                    testTag = "tool_photo_card",
+                    onClick = { onDismiss(); onPickPhoto() }
+                )
+                QuickAttachCard(
+                    icon = Icons.Outlined.Videocam,
+                    label = strings.toolVideoAttach,
+                    testTag = "tool_video_card",
+                    onClick = { onDismiss(); onPickVideo() }
+                )
+                QuickAttachCard(
+                    icon = Icons.Outlined.CameraAlt,
+                    label = strings.toolCamera,
+                    testTag = "tool_camera_card",
+                    onClick = { onDismiss(); onLaunchCamera() }
+                )
                 QuickAttachCard(
                     icon = Icons.Outlined.FolderOpen,
                     label = strings.toolFiles,

@@ -232,33 +232,25 @@ abstract class JarvisDatabase : RoomDatabase() {
             ProviderSlotEntity(
                 priorityOrder = 1,
                 providerId = "gemini",
-                providerDisplayName = "Google Gemini",
+                providerDisplayName = "Google Gemini (AI Studio Free/Key)",
                 baseUrl = "https://generativelanguage.googleapis.com/v1beta",
                 modelId = "gemini-2.5-flash",
                 isEnabled = true
             ),
             ProviderSlotEntity(
                 priorityOrder = 2,
-                providerId = "deepseek",
-                providerDisplayName = "DeepSeek",
-                baseUrl = "https://api.deepseek.com/v1",
-                modelId = "deepseek-chat",
+                providerId = "openrouter",
+                providerDisplayName = "OpenRouter (Free & Paid Models)",
+                baseUrl = "https://openrouter.ai/api/v1",
+                modelId = "openrouter/free",
                 isEnabled = true
             ),
             ProviderSlotEntity(
                 priorityOrder = 3,
-                providerId = "anthropic",
-                providerDisplayName = "Anthropic (Claude)",
-                baseUrl = "https://api.anthropic.com/v1",
-                modelId = "claude-sonnet-4-20250514",
-                isEnabled = true
-            ),
-            ProviderSlotEntity(
-                priorityOrder = 4,
-                providerId = "openai",
-                providerDisplayName = "OpenAI (ChatGPT)",
-                baseUrl = "https://api.openai.com/v1",
-                modelId = "gpt-4o",
+                providerId = "anymodels",
+                providerDisplayName = "AnyModels / Custom Proxy",
+                baseUrl = "https://api.anymodels.ai/v1",
+                modelId = "gemini-2.5-flash",
                 isEnabled = true
             )
         )

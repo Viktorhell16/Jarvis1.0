@@ -1,0 +1,142 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.nickname is string &&
+             data.nickname.size() >= 1 &&
+             data.nickname.size() <= 60 &&
+             data.languageCode is string &&
+             data.languageCode in ['ru', 'uk', 'en'] &&
+             data.paletteId is string &&
+             data.paletteId.size() >= 1 &&
+             data.paletteId.size() <= 50 &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    function isValidCloudNote(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 160 &&
+             data.artifactType is string &&
+             data.artifactType in ['FILE', 'IMAGE', 'PAGE', 'DOCUMENT', 'PRESENTATION', 'BOOK'] &&
+             data.category is string &&
+             data.category.size() >= 1 &&
+             data.category.size() <= 40 &&
+             data.content is string &&
+             data.content.size() <= 20000 &&
+             data.pinned is bool &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    function isValidCloudChat(data, userId) {
+      return data.userId is string &&
+             data.userId == userId &&
+             data.title is string &&
+             data.title.size() >= 1 &&
+             data.title.size() <= 160 &&
+             data.pinned is bool &&
+             data.lastMessagePreview is string &&
+             data.lastMessagePreview.size() <= 500 &&
+             data.createdAt is timestamp &&
+             data.createdAt <= request.time &&
+             data.updatedAt is timestamp &&
+             data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if isOwner(userId);
+
+      allow create: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       incoming().keys().hasAll(['userId', 'nickname', 'languageCode', 'paletteId', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'nickname', 'languageCode', 'paletteId', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(incoming(), userId);
+
+      allow update: if isOwner(userId) &&
+                       isValidId(userId) &&
+                       isValidUserProfile(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['nickname', 'languageCode', 'paletteId', 'updatedAt']);
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /notes/{noteId} {
+        allow get: if isOwner(userId) && isValidId(noteId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(noteId) &&
+                         incoming().keys().hasAll(['userId', 'title', 'artifactType', 'category', 'content', 'pinned', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'artifactType', 'category', 'content', 'pinned', 'createdAt', 'updatedAt']) &&
+                         isValidCloudNote(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(noteId) &&
+                         isValidCloudNote(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'artifactType', 'category', 'content', 'pinned', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(noteId);
+      }
+
+      match /chats/{chatId} {
+        allow get: if isOwner(userId) && isValidId(chatId);
+        allow list: if isOwner(userId);
+
+        allow create: if isOwner(userId) &&
+                         isValidId(chatId) &&
+                         incoming().keys().hasAll(['userId', 'title', 'pinned', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'pinned', 'lastMessagePreview', 'createdAt', 'updatedAt']) &&
+                         isValidCloudChat(incoming(), userId);
+
+        allow update: if isOwner(userId) &&
+                         isValidId(chatId) &&
+                         isValidCloudChat(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'pinned', 'lastMessagePreview', 'updatedAt']);
+
+        allow delete: if isOwner(userId) && isValidId(chatId);
+      }
+    }
+  }
+}

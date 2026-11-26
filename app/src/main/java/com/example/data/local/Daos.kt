@@ -75,6 +75,9 @@ interface MessageDao {
     @Query("UPDATE messages SET actionStatus = :status WHERE id = :id")
     suspend fun updateActionStatus(id: Long, status: String)
 
+    @Query("DELETE FROM messages WHERE id = :id")
+    suspend fun deleteMessageById(id: Long)
+
     @Query("DELETE FROM messages WHERE chatId = :chatId")
     suspend fun deleteMessagesForChat(chatId: Long)
 }
@@ -185,6 +188,9 @@ interface ProviderSlotDao {
 
     @Query("UPDATE provider_slots SET cooldownUntilMs = 0, lastError = NULL")
     suspend fun resetAllCooldowns()
+
+    @Query("DELETE FROM provider_slots WHERE providerId IN (:providerIds)")
+    suspend fun deleteSlotsByProviderIds(providerIds: List<String>)
 
     @Query("SELECT COUNT(*) FROM provider_slots")
     suspend fun count(): Int

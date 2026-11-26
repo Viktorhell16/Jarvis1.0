@@ -1,9 +1,13 @@
 package com.example.data.network
 
+import com.example.telemetry.JarvisCrashReporter
+import com.example.telemetry.JarvisPerformanceTracker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -25,6 +29,35 @@ class ExternalIntegrationsClient {
         .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    private inline fun <T> executeMeasuredCall(
+        request: Request,
+        contextTag: String,
+        onResponse: (Response) -> T
+    ): T {
+        val httpMetric = JarvisPerformanceTracker.startHttpMetric(request.url.toString(), request.method)
+        return try {
+            client.newCall(request).execute().use { resp ->
+                httpMetric.setResponseCode(resp.code)
+                httpMetric.setResponseContentType(resp.header("Content-Type"))
+                val len = resp.body?.contentLength() ?: -1L
+                if (len >= 0L) httpMetric.setResponsePayloadSize(len)
+                if (!resp.isSuccessful) {
+                    JarvisCrashReporter.recordNonFatal(
+                        IllegalStateException("Integration HTTP ${resp.code}"),
+                        contextTag
+                    )
+                }
+                onResponse(resp)
+            }
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            JarvisCrashReporter.recordNonFatal(e, contextTag)
+            throw e
+        } finally {
+            httpMetric.stop()
+        }
+    }
+
     suspend fun verifyGitHubPat(pat: String): Result<GitHubVerificationResult> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder()
@@ -34,7 +67,7 @@ class ExternalIntegrationsClient {
                 .addHeader("X-GitHub-Api-Version", "2022-11-28")
                 .get()
                 .build()
-            client.newCall(req).execute().use { resp ->
+            executeMeasuredCall(req, "integration_github_verify") { resp ->
                 val body = resp.body?.string() ?: ""
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(IllegalStateException("GitHub HTTP ${resp.code}: ${body.take(160)}"))
@@ -49,6 +82,7 @@ class ExternalIntegrationsClient {
                 )
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Result.failure(e)
         }
     }
@@ -64,7 +98,7 @@ class ExternalIntegrationsClient {
                 .get()
                 .build()
             val reposList = mutableListOf<String>()
-            client.newCall(repoReq).execute().use { resp ->
+            executeMeasuredCall(repoReq, "integration_github_repos") { resp ->
                 if (resp.isSuccessful) {
                     val arr = JSONArray(resp.body?.string() ?: "[]")
                     for (i in 0 until arr.length()) {
@@ -80,7 +114,7 @@ class ExternalIntegrationsClient {
                 .get()
                 .build()
             val searchList = mutableListOf<String>()
-            client.newCall(searchReq).execute().use { resp ->
+            executeMeasuredCall(searchReq, "integration_github_search") { resp ->
                 if (resp.isSuccessful) {
                     val items = JSONObject(resp.body?.string() ?: "{}").optJSONArray("items") ?: JSONArray()
                     for (i in 0 until items.length()) {
@@ -105,8 +139,8 @@ class ExternalIntegrationsClient {
                 .get()
                 .build()
             val snippets = mutableListOf<String>()
-            client.newCall(listReq).execute().use { resp ->
-                if (!resp.isSuccessful) return@use
+            executeMeasuredCall(listReq, "integration_gmail_list") { resp ->
+                if (!resp.isSuccessful) return@executeMeasuredCall
                 val msgs = JSONObject(resp.body?.string() ?: "{}").optJSONArray("messages") ?: JSONArray()
                 for (i in 0 until minOf(msgs.length(), 4)) {
                     val id = msgs.getJSONObject(i).optString("id")
@@ -115,7 +149,7 @@ class ExternalIntegrationsClient {
                         .addHeader("Authorization", "Bearer $oauthToken")
                         .get()
                         .build()
-                    client.newCall(detailReq).execute().use { dResp ->
+                    executeMeasuredCall(detailReq, "integration_gmail_detail") { dResp ->
                         if (dResp.isSuccessful) {
                             val dObj = JSONObject(dResp.body?.string() ?: "{}")
                             val headers = dObj.optJSONObject("payload")?.optJSONArray("headers") ?: JSONArray()
@@ -145,8 +179,8 @@ class ExternalIntegrationsClient {
                 .addHeader("Authorization", "Bearer $oauthToken")
                 .get()
                 .build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use ""
+            executeMeasuredCall(req, "integration_drive_list") { resp ->
+                if (!resp.isSuccessful) return@executeMeasuredCall ""
                 val files = JSONObject(resp.body?.string() ?: "{}").optJSONArray("files") ?: JSONArray()
                 val items = (0 until files.length()).map { i ->
                     val f = files.getJSONObject(i)
@@ -166,8 +200,8 @@ class ExternalIntegrationsClient {
                 .addHeader("Authorization", "Bearer $oauthToken")
                 .get()
                 .build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use ""
+            executeMeasuredCall(req, "integration_calendar_list") { resp ->
+                if (!resp.isSuccessful) return@executeMeasuredCall ""
                 val events = JSONObject(resp.body?.string() ?: "{}").optJSONArray("items") ?: JSONArray()
                 val items = (0 until events.length()).map { i ->
                     val ev = events.getJSONObject(i)
@@ -184,12 +218,13 @@ class ExternalIntegrationsClient {
             if (endpoint.isBlank()) return@withContext Result.failure(IllegalArgumentException("Endpoint URL is blank"))
             val builder = Request.Builder().url(endpoint.trim()).get()
             if (token.isNotBlank()) builder.addHeader("Authorization", "Bearer ${token.trim()}")
-            client.newCall(builder.build()).execute().use { resp ->
+            executeMeasuredCall(builder.build(), "integration_generic_bearer") { resp ->
                 val text = resp.body?.string() ?: ""
                 if (resp.isSuccessful) Result.success(text.take(1200))
                 else Result.failure(IllegalStateException("HTTP ${resp.code}: ${text.take(180)}"))
             }
         } catch (e: Exception) {
+            if (e is CancellationException) throw e
             Result.failure(e)
         }
     }

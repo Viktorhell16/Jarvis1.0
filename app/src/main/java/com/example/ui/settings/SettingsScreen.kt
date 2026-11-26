@@ -25,8 +25,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +45,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +61,7 @@ import com.example.accessibility.JarvisAccessibilityService
 import com.example.data.local.CustomizationState
 import com.example.data.local.JarvPrefsState
 import com.example.data.local.ProviderSlotEntity
+import com.example.telemetry.JarvisCrashReporter
 import com.example.ui.animations.BouncingShapesBackground
 import com.example.ui.animations.springBounce
 import com.example.ui.customization.PalettePreviewCircle
@@ -74,10 +82,12 @@ fun SettingsScreen(
     onToggleSlot: (ProviderSlotEntity) -> Unit,
     onMoveSlot: (ProviderSlotEntity, Int) -> Unit,
     onResetCooldowns: () -> Unit,
-    onToggleOverlay: (Boolean) -> Boolean
+    onToggleOverlay: (Boolean) -> Boolean,
+    onToggleTelemetry: (Boolean) -> Unit
 ) {
     BackHandler(onBack = onBack)
     val context = LocalContext.current
+    var showTestCrashDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -331,8 +341,100 @@ fun SettingsScreen(
                         }
                     }
                 }
+                // Telemetry & Stability (Crashlytics + Performance Monitoring)
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.90f)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = strings.telemetrySectionTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                                Text(
+                                    text = strings.telemetryToggleLabel,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = strings.telemetryToggleSub,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = customizationState.telemetryEnabled,
+                                onCheckedChange = onToggleTelemetry,
+                                modifier = Modifier
+                                    .springBounce(0.92f)
+                                    .testTag("telemetry_switch")
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        OutlinedButton(
+                            onClick = { showTestCrashDialog = true },
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .springBounce()
+                                .testTag("test_crash_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.BugReport,
+                                contentDescription = strings.testCrashButtonLabel,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = strings.testCrashButtonLabel,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(16.dp))
             }
+        }
+
+        if (showTestCrashDialog) {
+            AlertDialog(
+                onDismissRequest = { showTestCrashDialog = false },
+                title = { Text(strings.testCrashDialogTitle) },
+                text = { Text(strings.testCrashDialogBody) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showTestCrashDialog = false
+                            JarvisCrashReporter.triggerTestCrash()
+                        },
+                        modifier = Modifier.testTag("test_crash_confirm_button")
+                    ) {
+                        Text(
+                            text = strings.testCrashDialogConfirm,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showTestCrashDialog = false },
+                        modifier = Modifier.testTag("test_crash_cancel_button")
+                    ) {
+                        Text(strings.cancelAction)
+                    }
+                }
+            )
         }
     }
 }
